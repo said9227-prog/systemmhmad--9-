@@ -1,0 +1,6 @@
+{
+  "name": "الشيف ميزان برو",
+  "description": "تطبيق الشيف ميزان برو لإدارة حسابات العملاء، الفواتير، الديون والمقبوضات بدعم كامل لتعدد العملات.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
