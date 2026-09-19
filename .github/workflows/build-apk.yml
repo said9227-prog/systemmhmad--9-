@@ -1,0 +1,116 @@
+
+name: Build and Release Debug APK
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Verify Java environment
+        run: |
+          java -version
+          echo "JAVA_HOME=$JAVA_HOME"
+          
+          JAVA_VERSION=$(java -version 2>&1 | awk -F '"' '/version/ {print $2}')
+          if [ -z "$JAVA_VERSION" ]; then
+            echo "Failed to detect Java version."
+            exit 1
+          fi
+          
+          MAJOR_VERSION=$(echo "$JAVA_VERSION" | awk -F '.' '{if ($1 == 1) print $2; else print $1}')
+          if [ -z "$MAJOR_VERSION" ]; then
+            echo "Failed to detect major Java version."
+            exit 1
+          fi
+          
+          echo "Detected Java Major Version: $MAJOR_VERSION"
+          if [ "$MAJOR_VERSION" -lt 17 ]; then
+            echo "Java version is lower than 17."
+            exit 1
+          fi
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '9.3.1'
+
+      - name: Create temporary debug keystore
+        run: |
+          if [ ! -f "./debug.keystore" ]; then
+            echo "Generating debug.keystore..."
+            keytool -genkey -v \
+              -keystore ./debug.keystore \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -dname "CN=Android Debug,O=Android,C=US" \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000
+          fi
+          
+          if [ ! -f "./debug.keystore" ]; then
+            echo "Failed to create debug.keystore"
+            exit 1
+          fi
+          echo "Successfully verified debug.keystore exists."
+
+      - name: Build the debug APK
+        run: gradle :app:assembleDebug --stacktrace --no-daemon
+
+      - name: Verify the APK
+        run: |
+          TARGET_APK="app/build/outputs/apk/debug/app-debug.apk"
+          
+          if [ ! -f "$TARGET_APK" ]; then
+            echo "Expected APK not found: $TARGET_APK"
+            echo "Searching inside app/build/outputs/apk:"
+            find app/build/outputs/apk -type f -name "*.apk"
+            exit 1
+          fi
+          
+          if [ ! -s "$TARGET_APK" ]; then
+            echo "APK file is empty"
+            exit 1
+          fi
+          
+          if [[ "$TARGET_APK" != *.apk ]]; then
+            echo "File does not have .apk extension"
+            exit 1
+          fi
+          
+          echo "Verified $TARGET_APK exists and is valid."
+
+      - name: Upload debug APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          TAG="v${{ github.run_number }}-$(date +%s)"
+          gh release create "$TAG" app/build/outputs/apk/debug/app-debug.apk \
+            --title "Debug Build $TAG" \
+            --notes "Automated Debug APK release via GitHub Actions."
