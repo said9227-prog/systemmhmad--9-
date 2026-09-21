@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+
   workflow_dispatch:
 
 permissions:
@@ -16,13 +17,14 @@ jobs:
     steps:
 
       # ============================================================
-      # Checkout
+      # 1. Checkout
       # ============================================================
       - name: Checkout repository
         uses: actions/checkout@v4
 
+
       # ============================================================
-      # Setup Java 17
+      # 2. Setup Java 17
       # ============================================================
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -30,8 +32,9 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
+
       # ============================================================
-      # Verify Java
+      # 3. Verify Java
       # ============================================================
       - name: Verify Java environment
         run: |
@@ -59,38 +62,37 @@ jobs:
             exit 1
           fi
 
+
       # ============================================================
-      # Setup Gradle
+      # 4. Setup Gradle 9.3.1
       # ============================================================
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: '9.3.1'
 
+
       # ============================================================
-      # Prepare Debug Keystore
-      #
-      # If ./debug.keystore already exists, use it.
-      # Otherwise create one.
+      # 5. Prepare stable Debug Keystore
       # ============================================================
       - name: Prepare debug keystore
         run: |
-          DEBUG_KEYSTORE="$GITHUB_WORKSPACE/debug.keystore"
-          GRADLE_DEBUG_KEYSTORE="$HOME/.android/debug.keystore"
-
           mkdir -p "$HOME/.android"
 
-          if [ -f "$DEBUG_KEYSTORE" ]; then
-            echo "Existing repository debug.keystore found."
-            echo "Using existing debug.keystore."
+          if [ -f "./debug.keystore" ]; then
+            echo "Using repository debug.keystore"
+
+            cp "./debug.keystore" "$HOME/.android/debug.keystore"
+
+          elif [ -f "$HOME/.android/debug.keystore" ]; then
+            echo "Using existing Android debug.keystore"
 
           else
-            echo "No repository debug.keystore found."
-            echo "Generating a new debug.keystore..."
+            echo "Generating debug.keystore..."
 
             keytool -genkeypair \
               -v \
-              -keystore "$DEBUG_KEYSTORE" \
+              -keystore "$HOME/.android/debug.keystore" \
               -storepass android \
               -alias androiddebugkey \
               -keypass android \
@@ -100,55 +102,39 @@ jobs:
               -validity 10000
           fi
 
-          if [ ! -f "$DEBUG_KEYSTORE" ]; then
-            echo "ERROR: debug.keystore does not exist."
+          if [ ! -f "$HOME/.android/debug.keystore" ]; then
+            echo "ERROR: debug.keystore was not created."
             exit 1
           fi
 
-          # Make the same keystore available at the standard
-          # Gradle debug-keystore location.
-          cp "$DEBUG_KEYSTORE" "$GRADLE_DEBUG_KEYSTORE"
+          echo "Debug keystore verified successfully."
 
           echo ""
-          echo "Debug keystore:"
-          ls -lh "$DEBUG_KEYSTORE"
-
-          echo ""
-          echo "Gradle debug keystore:"
-          ls -lh "$GRADLE_DEBUG_KEYSTORE"
-
-      # ============================================================
-      # Show Debug Keystore SHA-1
-      # ============================================================
-      - name: Show debug keystore SHA-1
-        run: |
-          DEBUG_KEYSTORE="$HOME/.android/debug.keystore"
-
-          echo ""
-          echo "=================================================="
-          echo "DEBUG KEYSTORE CERTIFICATE"
-          echo "=================================================="
-
+          echo "Debug Keystore SHA-1:"
           keytool -list \
             -v \
-            -keystore "$DEBUG_KEYSTORE" \
-            -storepass android \
-            -alias androiddebugkey
-
-          echo ""
-          echo "=================================================="
-          echo "DEBUG KEYSTORE SHA-1"
-          echo "=================================================="
-
-          keytool -list \
-            -v \
-            -keystore "$DEBUG_KEYSTORE" \
+            -keystore "$HOME/.android/debug.keystore" \
             -storepass android \
             -alias androiddebugkey \
-            | grep -E "SHA1:|SHA-1:"
+            | grep -i "SHA1:" || true
+
 
       # ============================================================
-      # Build Debug APK
+      # 6. Make Gradle Wrapper executable if available
+      # ============================================================
+      - name: Prepare Gradle wrapper
+        run: |
+          if [ -f "./gradlew" ]; then
+            chmod +x ./gradlew
+            echo "Gradle wrapper found."
+          else
+            echo "Gradle wrapper not found."
+            echo "Using installed Gradle."
+          fi
+
+
+      # ============================================================
+      # 7. Build Debug APK
       # ============================================================
       - name: Build the debug APK
         run: |
@@ -156,20 +142,52 @@ jobs:
             --stacktrace \
             --no-daemon
 
+
       # ============================================================
-      # Verify APK
+      # 8. Find generated APK
+      # ============================================================
+      - name: Find generated APK
+        run: |
+          echo "Searching for generated APK files..."
+
+          find . \
+            -type f \
+            -name "*.apk" \
+            -print
+
+          echo ""
+          echo "Checking expected APK..."
+
+          TARGET_APK="app/build/outputs/apk/debug/app-debug.apk"
+
+          if [ ! -f "$TARGET_APK" ]; then
+            echo "ERROR: Expected APK was not found:"
+            echo "$TARGET_APK"
+
+            echo ""
+            echo "Available APK files:"
+            find . \
+              -type f \
+              -name "*.apk" \
+              -print
+
+            exit 1
+          fi
+
+          echo ""
+          echo "APK successfully generated:"
+          ls -lh "$TARGET_APK"
+
+
+      # ============================================================
+      # 9. Verify APK
       # ============================================================
       - name: Verify the APK
         run: |
           TARGET_APK="app/build/outputs/apk/debug/app-debug.apk"
 
           if [ ! -f "$TARGET_APK" ]; then
-            echo "Expected APK not found: $TARGET_APK"
-
-            echo ""
-            echo "Searching inside app/build/outputs/apk:"
-            find app/build/outputs/apk -type f -name "*.apk"
-
+            echo "APK file does not exist."
             exit 1
           fi
 
@@ -183,17 +201,24 @@ jobs:
             exit 1
           fi
 
-          echo "Verified APK:"
-          ls -lh "$TARGET_APK"
+          APK_SIZE=$(stat -c%s "$TARGET_APK")
+
+          echo "APK size: $APK_SIZE bytes"
+
+          if [ "$APK_SIZE" -lt 10000 ]; then
+            echo "ERROR: APK size is suspiciously small."
+            exit 1
+          fi
+
+          echo "APK file verification successful."
+
 
       # ============================================================
-      # Find Android SDK Build Tools / apksigner
+      # 10. Find apksigner
       # ============================================================
       - name: Find apksigner
+        id: apksigner
         run: |
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-
           APKSIGNER=$(find "$ANDROID_HOME/build-tools" \
             -type f \
             -name "apksigner" \
@@ -202,100 +227,83 @@ jobs:
 
           if [ -z "$APKSIGNER" ]; then
             echo "ERROR: apksigner was not found."
-            echo ""
-            echo "Available build-tools:"
-            find "$ANDROID_HOME/build-tools" -maxdepth 2 -type f -name "apksigner" || true
             exit 1
           fi
 
-          echo "APKSIGNER=$APKSIGNER"
+          echo "apksigner found:"
+          echo "$APKSIGNER"
 
-          "$APKSIGNER" version
+          echo "path=$APKSIGNER" >> "$GITHUB_OUTPUT"
+
 
       # ============================================================
-      # Verify APK signature
+      # 11. Verify APK signature
       # ============================================================
       - name: Verify APK signature
         run: |
           TARGET_APK="app/build/outputs/apk/debug/app-debug.apk"
+          APKSIGNER="${{ steps.apksigner.outputs.path }}"
 
-          APKSIGNER=$(find "$ANDROID_HOME/build-tools" \
-            -type f \
-            -name "apksigner" \
-            | sort -V \
-            | tail -n 1)
-
-          if [ -z "$APKSIGNER" ]; then
-            echo "ERROR: apksigner was not found."
-            exit 1
-          fi
-
-          echo "=================================================="
-          echo "APK SIGNATURE VERIFICATION"
-          echo "=================================================="
+          echo "Verifying APK signature..."
 
           "$APKSIGNER" verify \
             --verbose \
             --print-certs \
             "$TARGET_APK"
 
+
       # ============================================================
-      # Extract SHA-1 directly from FINAL APK
-      #
-      # This is the SHA-1 that should be registered in
-      # Google Cloud Console for this APK.
+      # 12. Get SHA-1 from FINAL APK
       # ============================================================
       - name: Get SHA-1 from final APK
         run: |
           TARGET_APK="app/build/outputs/apk/debug/app-debug.apk"
+          APKSIGNER="${{ steps.apksigner.outputs.path }}"
 
-          APKSIGNER=$(find "$ANDROID_HOME/build-tools" \
-            -type f \
-            -name "apksigner" \
-            | sort -V \
-            | tail -n 1)
-
-          if [ -z "$APKSIGNER" ]; then
-            echo "ERROR: apksigner was not found."
-            exit 1
-          fi
-
-          echo ""
-          echo "=================================================="
-          echo "FINAL APK CERTIFICATE"
-          echo "=================================================="
+          echo "Reading certificate from final APK..."
 
           CERT_OUTPUT=$("$APKSIGNER" verify \
             --print-certs \
             "$TARGET_APK")
 
-          echo "$CERT_OUTPUT"
-
           echo ""
-          echo "=================================================="
-          echo "SHA-1 FOR GOOGLE CLOUD CONSOLE"
-          echo "=================================================="
+          echo "========== APK CERTIFICATE =========="
+          echo "$CERT_OUTPUT"
+          echo "====================================="
+          echo ""
 
           SHA1=$(echo "$CERT_OUTPUT" \
-            | grep -i "SHA-1 certificate fingerprint" \
+            | grep -i "certificate SHA-1 digest" \
             | sed 's/.*: //')
 
           if [ -z "$SHA1" ]; then
             echo "ERROR: Could not extract SHA-1 from APK."
+
             echo ""
             echo "Full certificate output:"
             echo "$CERT_OUTPUT"
+
             exit 1
           fi
 
           echo ""
-          echo "SHA-1: $SHA1"
+          echo "======================================"
+          echo "FINAL APK SHA-1"
+          echo "======================================"
+          echo "$SHA1"
+          echo "======================================"
+
+          SHA1_COLON=$(echo "$SHA1" \
+            | sed 's/../&:/g' \
+            | sed 's/:$//')
+
           echo ""
-          echo "Use this SHA-1 in Google Cloud Console."
-          echo "=================================================="
+          echo "SHA-1 with colons:"
+          echo "$SHA1_COLON"
+
 
       # ============================================================
-      # Upload Debug APK Artifact
+      # 13. Upload APK as GitHub Artifact
       # ============================================================
       - name: Upload debug APK artifact
         uses: actions/upload-artifact@v4
@@ -305,17 +313,22 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+
       # ============================================================
-      # Publish GitHub Release
+      # 14. Publish GitHub Release
       # ============================================================
       - name: Publish GitHub Release
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
+          TARGET_APK="app/build/outputs/apk/debug/app-debug.apk"
+
           TAG="v${{ github.run_number }}-$(date +%s)"
 
-          gh release create \
-            "$TAG" \
-            app/build/outputs/apk/debug/app-debug.apk \
+          echo "Creating GitHub Release:"
+          echo "$TAG"
+
+          gh release create "$TAG" \
+            "$TARGET_APK" \
             --title "Debug Build $TAG" \
             --notes "Automated Debug APK release via GitHub Actions."
