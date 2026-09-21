@@ -14,15 +14,25 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+
+      # ============================================================
+      # Checkout
+      # ============================================================
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # ============================================================
+      # Setup Java 17
+      # ============================================================
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
 
+      # ============================================================
+      # Verify Java
+      # ============================================================
       - name: Verify Java environment
         run: |
           java -version
@@ -49,31 +59,34 @@ jobs:
             exit 1
           fi
 
+      # ============================================================
+      # Setup Gradle
+      # ============================================================
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: '9.3.1'
 
-      # ------------------------------------------------------------
-      # Create a stable debug keystore
-      # ------------------------------------------------------------
-      - name: Prepare stable debug keystore
+      # ============================================================
+      # Prepare Debug Keystore
+      #
+      # If ./debug.keystore already exists, use it.
+      # Otherwise create one.
+      # ============================================================
+      - name: Prepare debug keystore
         run: |
-          DEBUG_KEYSTORE="$HOME/.android/debug.keystore"
+          DEBUG_KEYSTORE="$GITHUB_WORKSPACE/debug.keystore"
+          GRADLE_DEBUG_KEYSTORE="$HOME/.android/debug.keystore"
 
           mkdir -p "$HOME/.android"
 
-          if [ -f "./debug.keystore" ]; then
-            echo "Using repository debug.keystore."
-
-            cp "./debug.keystore" "$DEBUG_KEYSTORE"
-
-          elif [ -f "$DEBUG_KEYSTORE" ]; then
-            echo "Using existing Gradle debug.keystore."
+          if [ -f "$DEBUG_KEYSTORE" ]; then
+            echo "Existing repository debug.keystore found."
+            echo "Using existing debug.keystore."
 
           else
-            echo "No debug.keystore found."
-            echo "Generating a new stable debug.keystore..."
+            echo "No repository debug.keystore found."
+            echo "Generating a new debug.keystore..."
 
             keytool -genkeypair \
               -v \
@@ -88,20 +101,41 @@ jobs:
           fi
 
           if [ ! -f "$DEBUG_KEYSTORE" ]; then
-            echo "ERROR: debug.keystore was not created."
+            echo "ERROR: debug.keystore does not exist."
             exit 1
           fi
 
+          # Make the same keystore available at the standard
+          # Gradle debug-keystore location.
+          cp "$DEBUG_KEYSTORE" "$GRADLE_DEBUG_KEYSTORE"
+
+          echo ""
           echo "Debug keystore:"
           ls -lh "$DEBUG_KEYSTORE"
 
-      # ------------------------------------------------------------
-      # Display the SHA-1 of the keystore
-      # ------------------------------------------------------------
+          echo ""
+          echo "Gradle debug keystore:"
+          ls -lh "$GRADLE_DEBUG_KEYSTORE"
+
+      # ============================================================
+      # Show Debug Keystore SHA-1
+      # ============================================================
       - name: Show debug keystore SHA-1
         run: |
           DEBUG_KEYSTORE="$HOME/.android/debug.keystore"
 
+          echo ""
+          echo "=================================================="
+          echo "DEBUG KEYSTORE CERTIFICATE"
+          echo "=================================================="
+
+          keytool -list \
+            -v \
+            -keystore "$DEBUG_KEYSTORE" \
+            -storepass android \
+            -alias androiddebugkey
+
+          echo ""
           echo "=================================================="
           echo "DEBUG KEYSTORE SHA-1"
           echo "=================================================="
@@ -113,28 +147,29 @@ jobs:
             -alias androiddebugkey \
             | grep -E "SHA1:|SHA-1:"
 
-          echo "=================================================="
-
-      # ------------------------------------------------------------
+      # ============================================================
       # Build Debug APK
-      # ------------------------------------------------------------
+      # ============================================================
       - name: Build the debug APK
         run: |
           gradle :app:assembleDebug \
             --stacktrace \
             --no-daemon
 
-      # ------------------------------------------------------------
+      # ============================================================
       # Verify APK
-      # ------------------------------------------------------------
+      # ============================================================
       - name: Verify the APK
         run: |
           TARGET_APK="app/build/outputs/apk/debug/app-debug.apk"
 
           if [ ! -f "$TARGET_APK" ]; then
             echo "Expected APK not found: $TARGET_APK"
+
+            echo ""
             echo "Searching inside app/build/outputs/apk:"
             find app/build/outputs/apk -type f -name "*.apk"
+
             exit 1
           fi
 
@@ -151,60 +186,117 @@ jobs:
           echo "Verified APK:"
           ls -lh "$TARGET_APK"
 
-      # ------------------------------------------------------------
-      # Extract SHA-1 directly from the final APK
-      # This is the most important value for Google Cloud OAuth.
-      # ------------------------------------------------------------
+      # ============================================================
+      # Find Android SDK Build Tools / apksigner
+      # ============================================================
+      - name: Find apksigner
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" \
+            -type f \
+            -name "apksigner" \
+            | sort -V \
+            | tail -n 1)
+
+          if [ -z "$APKSIGNER" ]; then
+            echo "ERROR: apksigner was not found."
+            echo ""
+            echo "Available build-tools:"
+            find "$ANDROID_HOME/build-tools" -maxdepth 2 -type f -name "apksigner" || true
+            exit 1
+          fi
+
+          echo "APKSIGNER=$APKSIGNER"
+
+          "$APKSIGNER" version
+
+      # ============================================================
+      # Verify APK signature
+      # ============================================================
+      - name: Verify APK signature
+        run: |
+          TARGET_APK="app/build/outputs/apk/debug/app-debug.apk"
+
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" \
+            -type f \
+            -name "apksigner" \
+            | sort -V \
+            | tail -n 1)
+
+          if [ -z "$APKSIGNER" ]; then
+            echo "ERROR: apksigner was not found."
+            exit 1
+          fi
+
+          echo "=================================================="
+          echo "APK SIGNATURE VERIFICATION"
+          echo "=================================================="
+
+          "$APKSIGNER" verify \
+            --verbose \
+            --print-certs \
+            "$TARGET_APK"
+
+      # ============================================================
+      # Extract SHA-1 directly from FINAL APK
+      #
+      # This is the SHA-1 that should be registered in
+      # Google Cloud Console for this APK.
+      # ============================================================
       - name: Get SHA-1 from final APK
         run: |
           TARGET_APK="app/build/outputs/apk/debug/app-debug.apk"
+
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" \
+            -type f \
+            -name "apksigner" \
+            | sort -V \
+            | tail -n 1)
+
+          if [ -z "$APKSIGNER" ]; then
+            echo "ERROR: apksigner was not found."
+            exit 1
+          fi
 
           echo ""
           echo "=================================================="
           echo "FINAL APK CERTIFICATE"
           echo "=================================================="
 
-          keytool -printcert \
-            -jarfile "$TARGET_APK"
+          CERT_OUTPUT=$("$APKSIGNER" verify \
+            --print-certs \
+            "$TARGET_APK")
+
+          echo "$CERT_OUTPUT"
 
           echo ""
           echo "=================================================="
           echo "SHA-1 FOR GOOGLE CLOUD CONSOLE"
           echo "=================================================="
 
-          SHA1=$(keytool -printcert -jarfile "$TARGET_APK" \
-            | awk -F': ' '/SHA1:|SHA-1:/ {print $2; exit}')
+          SHA1=$(echo "$CERT_OUTPUT" \
+            | grep -i "SHA-1 certificate fingerprint" \
+            | sed 's/.*: //')
 
           if [ -z "$SHA1" ]; then
             echo "ERROR: Could not extract SHA-1 from APK."
+            echo ""
+            echo "Full certificate output:"
+            echo "$CERT_OUTPUT"
             exit 1
           fi
 
+          echo ""
           echo "SHA-1: $SHA1"
+          echo ""
+          echo "Use this SHA-1 in Google Cloud Console."
           echo "=================================================="
 
-      # ------------------------------------------------------------
-      # Verify application ID from APK
-      # ------------------------------------------------------------
-      - name: Verify APK application ID
-        run: |
-          TARGET_APK="app/build/outputs/apk/debug/app-debug.apk"
-
-          echo "APK created successfully."
-          echo "Target APK: $TARGET_APK"
-
-          if command -v aapt >/dev/null 2>&1; then
-            echo ""
-            echo "APK package information:"
-            aapt dump badging "$TARGET_APK" | grep "^package:"
-          else
-            echo "aapt is not available on this runner."
-            echo "Skipping package-name inspection."
-          fi
-
-      # ------------------------------------------------------------
-      # Upload APK artifact
-      # ------------------------------------------------------------
+      # ============================================================
+      # Upload Debug APK Artifact
+      # ============================================================
       - name: Upload debug APK artifact
         uses: actions/upload-artifact@v4
         with:
@@ -213,9 +305,9 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-      # ------------------------------------------------------------
+      # ============================================================
       # Publish GitHub Release
-      # ------------------------------------------------------------
+      # ============================================================
       - name: Publish GitHub Release
         env:
           GITHUB_TOKEN: ${{ github.token }}
