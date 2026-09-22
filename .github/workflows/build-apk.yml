@@ -1,3 +1,4 @@
+
 name: Build and Release Debug APK
 
 on:
@@ -6,12 +7,6 @@ on:
       - main
 
   workflow_dispatch:
-    inputs:
-      bootstrap_keystore:
-        description: "Create the permanent signing keystore for the first build"
-        required: true
-        type: boolean
-        default: false
 
 permissions:
   contents: write
@@ -50,22 +45,21 @@ jobs:
           JAVA_VERSION=$(java -version 2>&1 | awk -F '"' '/version/ {print $2}')
 
           if [ -z "$JAVA_VERSION" ]; then
-            echo "ERROR: Failed to detect Java version."
+            echo "Failed to detect Java version."
             exit 1
           fi
 
-          MAJOR_VERSION=$(echo "$JAVA_VERSION" | awk -F '.' \
-            '{if ($1 == 1) print $2; else print $1}')
+          MAJOR_VERSION=$(echo "$JAVA_VERSION" | awk -F '.' '{if ($1 == 1) print $2; else print $1}')
 
           if [ -z "$MAJOR_VERSION" ]; then
-            echo "ERROR: Failed to detect major Java version."
+            echo "Failed to detect major Java version."
             exit 1
           fi
 
           echo "Detected Java Major Version: $MAJOR_VERSION"
 
           if [ "$MAJOR_VERSION" -lt 17 ]; then
-            echo "ERROR: Java version is lower than 17."
+            echo "Java version is lower than 17."
             exit 1
           fi
 
@@ -80,62 +74,26 @@ jobs:
 
 
       # ============================================================
-      # 5. Prepare permanent signing keystore
-      #
-      # Priority:
-      # 1. DEBUG_KEYSTORE_BASE64 secret
-      # 2. One-time bootstrap generation
-      #
-      # IMPORTANT:
-      # After bootstrap, save the generated keystore as
-      # DEBUG_KEYSTORE_BASE64 before making normal builds.
+      # 5. Prepare stable Debug Keystore
       # ============================================================
-      - name: Prepare stable signing keystore
-        env:
-          DEBUG_KEYSTORE_BASE64: ${{ secrets.DEBUG_KEYSTORE_BASE64 }}
-          BOOTSTRAP_KEYSTORE: ${{ inputs.bootstrap_keystore }}
+      - name: Prepare debug keystore
         run: |
-          set -e
-
           mkdir -p "$HOME/.android"
 
-          KEYSTORE="$HOME/.android/debug.keystore"
+          if [ -f "./debug.keystore" ]; then
+            echo "Using repository debug.keystore"
 
-          echo "============================================================"
-          echo "Preparing stable signing keystore"
-          echo "============================================================"
+            cp "./debug.keystore" "$HOME/.android/debug.keystore"
 
-          # --------------------------------------------------------
-          # CASE 1:
-          # Existing permanent secret
-          # --------------------------------------------------------
-          if [ -n "$DEBUG_KEYSTORE_BASE64" ]; then
+          elif [ -f "$HOME/.android/debug.keystore" ]; then
+            echo "Using existing Android debug.keystore"
 
-            echo "DEBUG_KEYSTORE_BASE64 found."
-            echo "Restoring permanent signing keystore..."
-
-            echo "$DEBUG_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE"
-
-            if [ ! -s "$KEYSTORE" ]; then
-              echo "ERROR: Restored keystore is empty."
-              exit 1
-            fi
-
-            echo "Permanent signing keystore restored successfully."
-
-          # --------------------------------------------------------
-          # CASE 2:
-          # One-time bootstrap
-          # --------------------------------------------------------
-          elif [ "$BOOTSTRAP_KEYSTORE" = "true" ]; then
-
-            echo "No DEBUG_KEYSTORE_BASE64 secret found."
-            echo "Bootstrap mode enabled."
-            echo "Generating the permanent signing keystore..."
+          else
+            echo "Generating debug.keystore..."
 
             keytool -genkeypair \
               -v \
-              -keystore "$KEYSTORE" \
+              -keystore "$HOME/.android/debug.keystore" \
               -storepass android \
               -alias androiddebugkey \
               -keypass android \
@@ -143,109 +101,27 @@ jobs:
               -keyalg RSA \
               -keysize 2048 \
               -validity 10000
+          fi
 
-            if [ ! -s "$KEYSTORE" ]; then
-              echo "ERROR: Failed to create debug.keystore."
-              exit 1
-            fi
-
-            echo ""
-            echo "============================================================"
-            echo "BOOTSTRAP KEYSTORE CREATED"
-            echo "============================================================"
-            echo "The keystore will be uploaded as a temporary artifact."
-            echo ""
-            echo "IMPORTANT:"
-            echo "Download the artifact and add it to:"
-            echo "DEBUG_KEYSTORE_BASE64"
-            echo "in GitHub Repository Secrets."
-            echo "============================================================"
-
-          # --------------------------------------------------------
-          # CASE 3:
-          # No secret and no bootstrap
-          # --------------------------------------------------------
-          else
-
-            echo "============================================================"
-            echo "ERROR: Permanent signing key is not configured."
-            echo "============================================================"
-            echo ""
-            echo "You must first run this workflow manually with:"
-            echo ""
-            echo "bootstrap_keystore = true"
-            echo ""
-            echo "Then download the generated stable-debug-keystore"
-            echo "artifact and create the GitHub Secret:"
-            echo ""
-            echo "DEBUG_KEYSTORE_BASE64"
-            echo ""
-            echo "Do NOT run normal builds until the secret is configured."
-            echo "============================================================"
-
+          if [ ! -f "$HOME/.android/debug.keystore" ]; then
+            echo "ERROR: debug.keystore was not created."
             exit 1
           fi
 
-
-      # ============================================================
-      # 6. Verify keystore
-      # ============================================================
-      - name: Verify stable signing keystore
-        run: |
-          set -e
-
-          KEYSTORE="$HOME/.android/debug.keystore"
-
-          if [ ! -f "$KEYSTORE" ]; then
-            echo "ERROR: debug.keystore does not exist."
-            exit 1
-          fi
-
-          echo "Keystore file:"
-          ls -lh "$KEYSTORE"
+          echo "Debug keystore verified successfully."
 
           echo ""
-          echo "============================================================"
-          echo "SIGNING CERTIFICATE"
-          echo "============================================================"
-
+          echo "Debug Keystore SHA-1:"
           keytool -list \
             -v \
-            -keystore "$KEYSTORE" \
-            -storepass android \
-            -alias androiddebugkey
-
-          echo ""
-          echo "============================================================"
-          echo "SHA-1"
-          echo "============================================================"
-
-          keytool -list \
-            -v \
-            -keystore "$KEYSTORE" \
+            -keystore "$HOME/.android/debug.keystore" \
             -storepass android \
             -alias androiddebugkey \
             | grep -i "SHA1:" || true
 
 
       # ============================================================
-      # 7. Upload bootstrap keystore
-      #
-      # This only matters during the first bootstrap run.
-      # Retention is intentionally short.
-      # ============================================================
-      - name: Upload stable debug keystore
-        if: ${{ inputs.bootstrap_keystore == true }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: stable-debug-keystore
-          path: ${{ env.HOME }}/.android/debug.keystore
-          if-no-files-found: error
-          retention-days: 1
-
-
-      # ============================================================
-      # 8. Make Gradle Wrapper executable if available
+      # 6. Make Gradle Wrapper executable if available
       # ============================================================
       - name: Prepare Gradle wrapper
         run: |
@@ -259,7 +135,7 @@ jobs:
 
 
       # ============================================================
-      # 9. Build Debug APK
+      # 7. Build Debug APK
       # ============================================================
       - name: Build the debug APK
         run: |
@@ -269,12 +145,10 @@ jobs:
 
 
       # ============================================================
-      # 10. Find generated APK
+      # 8. Find generated APK
       # ============================================================
       - name: Find generated APK
         run: |
-          set -e
-
           echo "Searching for generated APK files..."
 
           find . \
@@ -283,6 +157,7 @@ jobs:
             -print
 
           echo ""
+          echo "Checking expected APK..."
 
           TARGET_APK="app/build/outputs/apk/debug/app-debug.apk"
 
@@ -292,7 +167,6 @@ jobs:
 
             echo ""
             echo "Available APK files:"
-
             find . \
               -type f \
               -name "*.apk" \
@@ -307,21 +181,24 @@ jobs:
 
 
       # ============================================================
-      # 11. Verify APK
+      # 9. Verify APK
       # ============================================================
       - name: Verify the APK
         run: |
-          set -e
-
           TARGET_APK="app/build/outputs/apk/debug/app-debug.apk"
 
           if [ ! -f "$TARGET_APK" ]; then
-            echo "ERROR: APK file does not exist."
+            echo "APK file does not exist."
             exit 1
           fi
 
           if [ ! -s "$TARGET_APK" ]; then
-            echo "ERROR: APK file is empty."
+            echo "APK file is empty."
+            exit 1
+          fi
+
+          if [[ "$TARGET_APK" != *.apk ]]; then
+            echo "File does not have .apk extension."
             exit 1
           fi
 
@@ -338,13 +215,11 @@ jobs:
 
 
       # ============================================================
-      # 12. Find apksigner
+      # 10. Find apksigner
       # ============================================================
       - name: Find apksigner
         id: apksigner
         run: |
-          set -e
-
           APKSIGNER=$(find "$ANDROID_HOME/build-tools" \
             -type f \
             -name "apksigner" \
@@ -363,12 +238,10 @@ jobs:
 
 
       # ============================================================
-      # 13. Verify APK signature
+      # 11. Verify APK signature
       # ============================================================
       - name: Verify APK signature
         run: |
-          set -e
-
           TARGET_APK="app/build/outputs/apk/debug/app-debug.apk"
           APKSIGNER="${{ steps.apksigner.outputs.path }}"
 
@@ -381,12 +254,10 @@ jobs:
 
 
       # ============================================================
-      # 14. Get SHA-1 from FINAL APK
+      # 12. Get SHA-1 from FINAL APK
       # ============================================================
       - name: Get SHA-1 from final APK
         run: |
-          set -e
-
           TARGET_APK="app/build/outputs/apk/debug/app-debug.apk"
           APKSIGNER="${{ steps.apksigner.outputs.path }}"
 
@@ -408,6 +279,11 @@ jobs:
 
           if [ -z "$SHA1" ]; then
             echo "ERROR: Could not extract SHA-1 from APK."
+
+            echo ""
+            echo "Full certificate output:"
+            echo "$CERT_OUTPUT"
+
             exit 1
           fi
 
@@ -428,7 +304,7 @@ jobs:
 
 
       # ============================================================
-      # 15. Upload APK as GitHub Artifact
+      # 13. Upload APK as GitHub Artifact
       # ============================================================
       - name: Upload debug APK artifact
         uses: actions/upload-artifact@v4
@@ -440,14 +316,12 @@ jobs:
 
 
       # ============================================================
-      # 16. Publish GitHub Release
+      # 14. Publish GitHub Release
       # ============================================================
       - name: Publish GitHub Release
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
-          set -e
-
           TARGET_APK="app/build/outputs/apk/debug/app-debug.apk"
 
           TAG="v${{ github.run_number }}-$(date +%s)"
