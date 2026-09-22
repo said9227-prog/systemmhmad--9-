@@ -6,12 +6,245 @@ on:
       - main
 
   workflow_dispatch:
+    inputs:
+      bootstrap_keystore:
+        description: 'Create and upload the permanent debug.keystore'
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: write
 
 jobs:
+
+  # ================================================================
+  # JOB 1: Bootstrap permanent debug keystore
+  # ================================================================
+  bootstrap-keystore:
+    name: Bootstrap Permanent Debug Keystore
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.bootstrap_keystore == true }}
+    runs-on: ubuntu-latest
+
+    steps:
+
+      # ------------------------------------------------------------
+      # 1. Checkout
+      # ------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+
+      # ------------------------------------------------------------
+      # 2. Setup Java 17
+      # ------------------------------------------------------------
+      - name: Setup Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+
+      # ------------------------------------------------------------
+      # 3. Create permanent debug.keystore
+      # ------------------------------------------------------------
+      - name: Create permanent debug keystore
+        shell: bash
+        run: |
+          set -e
+
+          KEYSTORE="$HOME/.android/debug.keystore"
+
+          echo "============================================================"
+          echo "CREATING PERMANENT DEBUG KEYSTORE"
+          echo "============================================================"
+
+          mkdir -p "$HOME/.android"
+
+          # --------------------------------------------------------
+          # If a debug.keystore already exists in repository,
+          # use it instead of generating another one.
+          # --------------------------------------------------------
+          if [ -f "./debug.keystore" ]; then
+
+            echo "Repository debug.keystore found."
+            echo "Using repository keystore."
+
+            cp "./debug.keystore" "$KEYSTORE"
+
+          else
+
+            echo "No repository debug.keystore found."
+            echo "Generating a new permanent debug keystore."
+
+            keytool -genkeypair \
+              -v \
+              -keystore "$KEYSTORE" \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -dname "CN=Android Debug,O=Android,C=US" \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000
+
+          fi
+
+
+      # ------------------------------------------------------------
+      # 4. Verify keystore
+      # ------------------------------------------------------------
+      - name: Verify permanent debug keystore
+        shell: bash
+        run: |
+          set -e
+
+          KEYSTORE="$HOME/.android/debug.keystore"
+
+          echo "============================================================"
+          echo "VERIFYING PERMANENT DEBUG KEYSTORE"
+          echo "============================================================"
+
+          if [ ! -f "$KEYSTORE" ]; then
+            echo "ERROR: debug.keystore was not created."
+            exit 1
+          fi
+
+          if [ ! -s "$KEYSTORE" ]; then
+            echo "ERROR: debug.keystore is empty."
+            exit 1
+          fi
+
+          if ! keytool -list \
+            -keystore "$KEYSTORE" \
+            -storepass android \
+            -alias androiddebugkey > /dev/null 2>&1; then
+
+            echo "ERROR: debug.keystore is invalid."
+            exit 1
+          fi
+
+          echo "Keystore structure verified successfully."
+
+
+      # ------------------------------------------------------------
+      # 5. Display SHA-1
+      # ------------------------------------------------------------
+      - name: Display keystore SHA-1
+        shell: bash
+        run: |
+          set -e
+
+          KEYSTORE="$HOME/.android/debug.keystore"
+
+          echo ""
+          echo "============================================================"
+          echo "PERMANENT DEBUG KEYSTORE SHA-1"
+          echo "============================================================"
+
+          keytool -list \
+            -v \
+            -keystore "$KEYSTORE" \
+            -storepass android \
+            -alias androiddebugkey \
+            | grep -i "SHA1:"
+
+          echo ""
+          echo "============================================================"
+          echo "IMPORTANT"
+          echo "============================================================"
+          echo ""
+          echo "This SHA-1 belongs to the permanent debug.keystore."
+          echo ""
+          echo "Do NOT generate another keystore."
+          echo "Do NOT modify this keystore."
+          echo "Keep this file safe."
+          echo ""
+
+
+      # ------------------------------------------------------------
+      # 6. Copy keystore into workspace
+      # ------------------------------------------------------------
+      - name: Prepare keystore artifact
+        shell: bash
+        run: |
+          set -e
+
+          ARTIFACT_DIR="${{ github.workspace }}/stable-debug-keystore"
+
+          mkdir -p "$ARTIFACT_DIR"
+
+          cp \
+            "$HOME/.android/debug.keystore" \
+            "$ARTIFACT_DIR/debug.keystore"
+
+          echo "============================================================"
+          echo "KEYSTORE ARTIFACT PREPARED"
+          echo "============================================================"
+
+          ls -lh "$ARTIFACT_DIR/debug.keystore"
+
+
+      # ------------------------------------------------------------
+      # 7. Upload debug.keystore as Artifact
+      # ------------------------------------------------------------
+      - name: Upload stable debug keystore
+        uses: actions/upload-artifact@v4
+        with:
+          name: stable-debug-keystore
+          path: ${{ github.workspace }}/stable-debug-keystore/debug.keystore
+          if-no-files-found: error
+          retention-days: 1
+
+
+      # ------------------------------------------------------------
+      # 8. Finished
+      # ------------------------------------------------------------
+      - name: Bootstrap completed
+        shell: bash
+        run: |
+          echo ""
+          echo "============================================================"
+          echo "BOOTSTRAP COMPLETED SUCCESSFULLY"
+          echo "============================================================"
+          echo ""
+          echo "Artifact:"
+          echo "stable-debug-keystore"
+          echo ""
+          echo "File:"
+          echo "debug.keystore"
+          echo ""
+          echo "Download this Artifact before it expires."
+          echo ""
+          echo "Next step:"
+          echo "Convert debug.keystore to Base64 in Termux."
+          echo ""
+          echo "Then create GitHub Secret:"
+          echo "DEBUG_KEYSTORE_BASE64"
+          echo ""
+          echo "============================================================"
+
+
+  # ================================================================
+  # JOB 2: Build and Release APK
+  # ================================================================
   build-and-release:
+    name: Build and Release Debug APK
+
+    # --------------------------------------------------------------
+    # Run for:
+    # - normal push to main
+    # - manual workflow when bootstrap_keystore = false
+    # --------------------------------------------------------------
+    if: >-
+      ${{
+        github.event_name == 'push' ||
+        (
+          github.event_name == 'workflow_dispatch' &&
+          inputs.bootstrap_keystore == false
+        )
+      }}
+
     runs-on: ubuntu-latest
 
     steps:
@@ -41,7 +274,13 @@ jobs:
         run: |
           set -e
 
+          echo "============================================================"
+          echo "VERIFYING JAVA ENVIRONMENT"
+          echo "============================================================"
+
           java -version
+
+          echo ""
           echo "JAVA_HOME=$JAVA_HOME"
 
           JAVA_VERSION=$(java -version 2>&1 | awk -F '"' '/version/ {print $2}')
@@ -59,13 +298,16 @@ jobs:
             exit 1
           fi
 
-          echo "Detected Java Major Version: $MAJOR_VERSION"
+          echo ""
+          echo "Detected Java version: $JAVA_VERSION"
+          echo "Detected Java major version: $MAJOR_VERSION"
 
           if [ "$MAJOR_VERSION" -lt 17 ]; then
             echo "ERROR: Java version is lower than 17."
             exit 1
           fi
 
+          echo ""
           echo "Java environment verified successfully."
 
 
@@ -79,7 +321,7 @@ jobs:
 
 
       # ============================================================
-      # 5. Prepare PERMANENT signing keystore
+      # 5. Prepare permanent signing keystore
       # ============================================================
       - name: Prepare permanent signing keystore
         env:
@@ -91,7 +333,7 @@ jobs:
           KEYSTORE="$HOME/.android/debug.keystore"
 
           echo "============================================================"
-          echo "Preparing permanent signing keystore"
+          echo "PREPARING PERMANENT SIGNING KEYSTORE"
           echo "============================================================"
 
           mkdir -p "$HOME/.android"
@@ -101,33 +343,46 @@ jobs:
           # Never generate a new signing key automatically.
           # --------------------------------------------------------
           if [ -z "$DEBUG_KEYSTORE_BASE64" ]; then
+
             echo ""
             echo "ERROR: DEBUG_KEYSTORE_BASE64 is not configured."
             echo ""
-            echo "Go to:"
-            echo "GitHub Repository"
-            echo "→ Settings"
-            echo "→ Secrets and variables"
-            echo "→ Actions"
+            echo "The permanent signing keystore has not been configured."
             echo ""
-            echo "Create repository secret:"
-            echo "DEBUG_KEYSTORE_BASE64"
+            echo "If this is the first setup:"
             echo ""
-            echo "The secret must contain the Base64 content"
-            echo "of the permanent debug.keystore."
+            echo "1. Run workflow manually."
+            echo "2. Set:"
+            echo "   bootstrap_keystore = true"
+            echo "3. Download stable-debug-keystore."
+            echo "4. Extract debug.keystore."
+            echo "5. Convert it to Base64 in Termux."
+            echo "6. Create GitHub Secret:"
+            echo "   DEBUG_KEYSTORE_BASE64"
             echo ""
+            echo "BUILD STOPPED."
             exit 1
           fi
 
           echo "DEBUG_KEYSTORE_BASE64 found."
+          echo ""
           echo "Restoring permanent signing keystore..."
 
           # --------------------------------------------------------
-          # Decode the permanent keystore
+          # Decode Base64
           # --------------------------------------------------------
-          printf '%s' "$DEBUG_KEYSTORE_BASE64" \
-            | base64 --decode > "$KEYSTORE"
+          if ! printf '%s' "$DEBUG_KEYSTORE_BASE64" \
+            | base64 --decode > "$KEYSTORE"; then
 
+            echo ""
+            echo "ERROR: Failed to decode DEBUG_KEYSTORE_BASE64."
+            echo "The Secret does not contain valid Base64 data."
+            exit 1
+          fi
+
+          # --------------------------------------------------------
+          # Verify file
+          # --------------------------------------------------------
           if [ ! -f "$KEYSTORE" ]; then
             echo "ERROR: debug.keystore was not created."
             exit 1
@@ -138,14 +393,43 @@ jobs:
             exit 1
           fi
 
-          echo "Permanent keystore restored successfully."
+          echo "Permanent debug.keystore restored successfully."
 
-          # --------------------------------------------------------
-          # Verify keystore
-          # --------------------------------------------------------
+
+      # ============================================================
+      # 6. Verify keystore and get SHA-1
+      # ============================================================
+      - name: Verify permanent signing keystore
+        shell: bash
+        run: |
+          set -e
+
+          KEYSTORE="$HOME/.android/debug.keystore"
+
+          echo "============================================================"
+          echo "VERIFYING PERMANENT KEYSTORE"
+          echo "============================================================"
+
+          if ! keytool -list \
+            -keystore "$KEYSTORE" \
+            -storepass android \
+            -alias androiddebugkey > /dev/null 2>&1; then
+
+            echo ""
+            echo "ERROR: The restored debug.keystore is invalid."
+            echo ""
+            echo "Expected:"
+            echo "Keystore password: android"
+            echo "Alias: androiddebugkey"
+            echo "Key password: android"
+            exit 1
+          fi
+
+          echo "Keystore structure verified successfully."
+
           echo ""
           echo "============================================================"
-          echo "PERMANENT KEYSTORE INFORMATION"
+          echo "PERMANENT KEYSTORE CERTIFICATE"
           echo "============================================================"
 
           keytool -list \
@@ -165,26 +449,30 @@ jobs:
             | awk -F': ' '/SHA1:/ {print $2; exit}')
 
           if [ -z "$KEYSTORE_SHA1" ]; then
+            echo ""
             echo "ERROR: Could not read SHA-1 from permanent keystore."
             exit 1
           fi
+
+          KEYSTORE_SHA1_NORMALIZED=$(echo "$KEYSTORE_SHA1" \
+            | tr -d '[:space:]' \
+            | tr '[:lower:]' '[:upper:]')
 
           echo ""
           echo "============================================================"
           echo "PERMANENT KEYSTORE SHA-1"
           echo "============================================================"
-          echo "$KEYSTORE_SHA1"
+          echo "$KEYSTORE_SHA1_NORMALIZED"
           echo "============================================================"
 
-          # Save for later verification steps.
-          echo "KEYSTORE_SHA1=$KEYSTORE_SHA1" >> "$GITHUB_ENV"
+          echo "KEYSTORE_SHA1=$KEYSTORE_SHA1_NORMALIZED" >> "$GITHUB_ENV"
 
           echo ""
           echo "Permanent signing keystore verification successful."
 
 
       # ============================================================
-      # 6. Verify Gradle wrapper
+      # 7. Verify Gradle wrapper
       # ============================================================
       - name: Prepare Gradle wrapper
         shell: bash
@@ -192,16 +480,21 @@ jobs:
           set -e
 
           if [ -f "./gradlew" ]; then
+
             chmod +x ./gradlew
+
             echo "Gradle wrapper found."
+
           else
+
             echo "Gradle wrapper not found."
             echo "Using installed Gradle 9.3.1."
+
           fi
 
 
       # ============================================================
-      # 7. Build Debug APK
+      # 8. Build Debug APK
       # ============================================================
       - name: Build the debug APK
         shell: bash
@@ -221,7 +514,7 @@ jobs:
 
 
       # ============================================================
-      # 8. Find generated APK
+      # 9. Find generated APK
       # ============================================================
       - name: Find generated APK
         shell: bash
@@ -230,7 +523,9 @@ jobs:
 
           TARGET_APK="app/build/outputs/apk/debug/app-debug.apk"
 
-          echo "Searching for generated APK files..."
+          echo "============================================================"
+          echo "SEARCHING FOR GENERATED APK"
+          echo "============================================================"
 
           find . \
             -type f \
@@ -240,6 +535,7 @@ jobs:
           echo ""
 
           if [ ! -f "$TARGET_APK" ]; then
+
             echo "ERROR: Expected APK was not found:"
             echo "$TARGET_APK"
 
@@ -260,7 +556,7 @@ jobs:
 
 
       # ============================================================
-      # 9. Verify APK file
+      # 10. Verify APK file
       # ============================================================
       - name: Verify APK
         shell: bash
@@ -268,6 +564,10 @@ jobs:
           set -e
 
           TARGET_APK="app/build/outputs/apk/debug/app-debug.apk"
+
+          echo "============================================================"
+          echo "VERIFYING APK FILE"
+          echo "============================================================"
 
           if [ ! -f "$TARGET_APK" ]; then
             echo "ERROR: APK file does not exist."
@@ -288,17 +588,27 @@ jobs:
             exit 1
           fi
 
+          echo ""
           echo "APK file verification successful."
 
 
       # ============================================================
-      # 10. Find apksigner
+      # 11. Find apksigner
       # ============================================================
       - name: Find apksigner
         id: apksigner
         shell: bash
         run: |
           set -e
+
+          echo "============================================================"
+          echo "FINDING APKSIGNER"
+          echo "============================================================"
+
+          if [ -z "$ANDROID_HOME" ]; then
+            echo "ERROR: ANDROID_HOME is not configured."
+            exit 1
+          fi
 
           APKSIGNER=$(find "$ANDROID_HOME/build-tools" \
             -type f \
@@ -318,7 +628,7 @@ jobs:
 
 
       # ============================================================
-      # 11. Verify APK signature
+      # 12. Verify APK signature
       # ============================================================
       - name: Verify APK signature
         shell: bash
@@ -342,7 +652,7 @@ jobs:
 
 
       # ============================================================
-      # 12. Compare keystore SHA-1 with FINAL APK SHA-1
+      # 13. Compare keystore SHA-1 with final APK SHA-1
       # ============================================================
       - name: Verify final APK uses permanent signing key
         shell: bash
@@ -364,10 +674,24 @@ jobs:
           echo "APK certificate information:"
           echo "$CERT_OUTPUT"
 
+          # --------------------------------------------------------
+          # Extract APK SHA-1
+          # --------------------------------------------------------
           APK_SHA1=$(echo "$CERT_OUTPUT" \
             | grep -i "certificate SHA-1 digest" \
             | sed 's/.*: //' \
             | tr -d '[:space:]')
+
+          if [ -z "$APK_SHA1" ]; then
+
+            echo ""
+            echo "ERROR: Could not extract SHA-1 from final APK."
+            echo ""
+            echo "Full certificate output:"
+            echo "$CERT_OUTPUT"
+
+            exit 1
+          fi
 
           KEYSTORE_SHA1_NORMALIZED=$(echo "$KEYSTORE_SHA1" \
             | tr -d '[:space:]' \
@@ -376,12 +700,6 @@ jobs:
           APK_SHA1_NORMALIZED=$(echo "$APK_SHA1" \
             | tr -d '[:space:]' \
             | tr '[:lower:]' '[:upper:]')
-
-          if [ -z "$APK_SHA1" ]; then
-            echo ""
-            echo "ERROR: Could not extract SHA-1 from final APK."
-            exit 1
-          fi
 
           echo ""
           echo "============================================================"
@@ -401,6 +719,7 @@ jobs:
           echo "============================================================"
 
           if [ "$KEYSTORE_SHA1_NORMALIZED" != "$APK_SHA1_NORMALIZED" ]; then
+
             echo ""
             echo "ERROR: SIGNING KEY MISMATCH!"
             echo ""
@@ -419,27 +738,62 @@ jobs:
             exit 1
           fi
 
-          echo ""
-          echo "SUCCESS!"
-          echo ""
-          echo "The APK is signed with the permanent signing key."
-          echo "The SHA-1 fingerprints match exactly."
-          echo ""
-
-          # Convert to colon format for easy reading.
+          # --------------------------------------------------------
+          # Convert SHA-1 to colon format
+          # --------------------------------------------------------
           APK_SHA1_COLON=$(echo "$APK_SHA1_NORMALIZED" \
             | sed 's/../&:/g' \
             | sed 's/:$//')
 
+          echo ""
+          echo "============================================================"
+          echo "SUCCESS"
+          echo "============================================================"
+          echo ""
+          echo "The APK is signed with the permanent signing key."
+          echo ""
+          echo "SHA-1 fingerprints match exactly."
+          echo ""
           echo "FINAL APK SHA-1:"
           echo "$APK_SHA1_COLON"
-
           echo ""
           echo "============================================================"
 
 
       # ============================================================
-      # 13. Upload APK Artifact
+      # 14. Display final APK information
+      # ============================================================
+      - name: Display final APK information
+        shell: bash
+        run: |
+          set -e
+
+          TARGET_APK="app/build/outputs/apk/debug/app-debug.apk"
+
+          echo "============================================================"
+          echo "FINAL APK INFORMATION"
+          echo "============================================================"
+
+          ls -lh "$TARGET_APK"
+
+          echo ""
+          echo "APK:"
+          echo "$TARGET_APK"
+
+          echo ""
+          echo "Application ID:"
+          echo "com.aistudio.clientaccountspro.txvdwz"
+
+          echo ""
+          echo "Permanent signing SHA-1:"
+          echo "$KEYSTORE_SHA1"
+
+          echo ""
+          echo "APK is ready for release."
+
+
+      # ============================================================
+      # 15. Upload APK Artifact
       # ============================================================
       - name: Upload debug APK artifact
         uses: actions/upload-artifact@v4
@@ -451,7 +805,7 @@ jobs:
 
 
       # ============================================================
-      # 14. Publish GitHub Release
+      # 16. Publish GitHub Release
       # ============================================================
       - name: Publish GitHub Release
         env:
@@ -478,3 +832,8 @@ jobs:
 
           echo ""
           echo "GitHub Release created successfully."
+
+          echo ""
+          echo "============================================================"
+          echo "BUILD AND RELEASE COMPLETED SUCCESSFULLY"
+          echo "============================================================"
