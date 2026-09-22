@@ -34,7 +34,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-
       # ------------------------------------------------------------
       # 2. Setup Java 17
       # ------------------------------------------------------------
@@ -43,7 +42,6 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-
 
       # ------------------------------------------------------------
       # 3. Create permanent debug.keystore
@@ -61,10 +59,6 @@ jobs:
 
           mkdir -p "$HOME/.android"
 
-          # --------------------------------------------------------
-          # If a debug.keystore already exists in repository,
-          # use it instead of generating another one.
-          # --------------------------------------------------------
           if [ -f "./debug.keystore" ]; then
 
             echo "Repository debug.keystore found."
@@ -89,7 +83,6 @@ jobs:
               -validity 10000
 
           fi
-
 
       # ------------------------------------------------------------
       # 4. Verify keystore
@@ -126,7 +119,6 @@ jobs:
 
           echo "Keystore structure verified successfully."
 
-
       # ------------------------------------------------------------
       # 5. Display SHA-1
       # ------------------------------------------------------------
@@ -161,7 +153,6 @@ jobs:
           echo "Keep this file safe."
           echo ""
 
-
       # ------------------------------------------------------------
       # 6. Copy keystore into workspace
       # ------------------------------------------------------------
@@ -184,7 +175,6 @@ jobs:
 
           ls -lh "$ARTIFACT_DIR/debug.keystore"
 
-
       # ------------------------------------------------------------
       # 7. Upload debug.keystore as Artifact
       # ------------------------------------------------------------
@@ -195,7 +185,6 @@ jobs:
           path: ${{ github.workspace }}/stable-debug-keystore/debug.keystore
           if-no-files-found: error
           retention-days: 1
-
 
       # ------------------------------------------------------------
       # 8. Finished
@@ -231,11 +220,6 @@ jobs:
   build-and-release:
     name: Build and Release Debug APK
 
-    # --------------------------------------------------------------
-    # Run for:
-    # - normal push to main
-    # - manual workflow when bootstrap_keystore = false
-    # --------------------------------------------------------------
     if: >-
       ${{
         github.event_name == 'push' ||
@@ -255,7 +239,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-
       # ============================================================
       # 2. Setup Java 17
       # ============================================================
@@ -264,7 +247,6 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-
 
       # ============================================================
       # 3. Verify Java environment
@@ -310,7 +292,6 @@ jobs:
           echo ""
           echo "Java environment verified successfully."
 
-
       # ============================================================
       # 4. Setup Gradle 9.3.1
       # ============================================================
@@ -318,7 +299,6 @@ jobs:
         uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: '9.3.1'
-
 
       # ============================================================
       # 5. Prepare permanent signing keystore
@@ -338,10 +318,6 @@ jobs:
 
           mkdir -p "$HOME/.android"
 
-          # --------------------------------------------------------
-          # Secret must exist.
-          # Never generate a new signing key automatically.
-          # --------------------------------------------------------
           if [ -z "$DEBUG_KEYSTORE_BASE64" ]; then
 
             echo ""
@@ -368,9 +344,6 @@ jobs:
           echo ""
           echo "Restoring permanent signing keystore..."
 
-          # --------------------------------------------------------
-          # Decode Base64
-          # --------------------------------------------------------
           if ! printf '%s' "$DEBUG_KEYSTORE_BASE64" \
             | base64 --decode > "$KEYSTORE"; then
 
@@ -380,9 +353,6 @@ jobs:
             exit 1
           fi
 
-          # --------------------------------------------------------
-          # Verify file
-          # --------------------------------------------------------
           if [ ! -f "$KEYSTORE" ]; then
             echo "ERROR: debug.keystore was not created."
             exit 1
@@ -394,7 +364,6 @@ jobs:
           fi
 
           echo "Permanent debug.keystore restored successfully."
-
 
       # ============================================================
       # 6. Verify keystore and get SHA-1
@@ -438,9 +407,6 @@ jobs:
             -storepass android \
             -alias androiddebugkey
 
-          # --------------------------------------------------------
-          # Extract SHA-1
-          # --------------------------------------------------------
           KEYSTORE_SHA1=$(keytool -list \
             -v \
             -keystore "$KEYSTORE" \
@@ -454,8 +420,13 @@ jobs:
             exit 1
           fi
 
+          # Normalize SHA-1:
+          # - Remove spaces
+          # - Remove colons
+          # - Remove hyphens
+          # - Convert to uppercase
           KEYSTORE_SHA1_NORMALIZED=$(echo "$KEYSTORE_SHA1" \
-            | tr -d '[:space:]' \
+            | tr -d '[:space:]:-' \
             | tr '[:lower:]' '[:upper:]')
 
           echo ""
@@ -469,7 +440,6 @@ jobs:
 
           echo ""
           echo "Permanent signing keystore verification successful."
-
 
       # ============================================================
       # 7. Verify Gradle wrapper
@@ -492,7 +462,6 @@ jobs:
 
           fi
 
-
       # ============================================================
       # 8. Build Debug APK
       # ============================================================
@@ -511,7 +480,6 @@ jobs:
 
           echo ""
           echo "Gradle build completed successfully."
-
 
       # ============================================================
       # 9. Find generated APK
@@ -554,7 +522,6 @@ jobs:
           echo "APK successfully generated:"
           ls -lh "$TARGET_APK"
 
-
       # ============================================================
       # 10. Verify APK file
       # ============================================================
@@ -591,7 +558,6 @@ jobs:
           echo ""
           echo "APK file verification successful."
 
-
       # ============================================================
       # 11. Find apksigner
       # ============================================================
@@ -626,7 +592,6 @@ jobs:
 
           echo "path=$APKSIGNER" >> "$GITHUB_OUTPUT"
 
-
       # ============================================================
       # 12. Verify APK signature
       # ============================================================
@@ -649,7 +614,6 @@ jobs:
 
           echo ""
           echo "APK signature verification successful."
-
 
       # ============================================================
       # 13. Compare keystore SHA-1 with final APK SHA-1
@@ -693,12 +657,26 @@ jobs:
             exit 1
           fi
 
+          # --------------------------------------------------------
+          # Normalize both SHA-1 values in exactly the same way.
+          #
+          # This fixes the previous problem where:
+          #
+          # Keystore:
+          # A2:F8:49:F6:...
+          #
+          # APK:
+          # A2F849F6...
+          #
+          # Both will now become:
+          # A2F849F6...
+          # --------------------------------------------------------
           KEYSTORE_SHA1_NORMALIZED=$(echo "$KEYSTORE_SHA1" \
-            | tr -d '[:space:]' \
+            | tr -d '[:space:]:-' \
             | tr '[:lower:]' '[:upper:]')
 
           APK_SHA1_NORMALIZED=$(echo "$APK_SHA1" \
-            | tr -d '[:space:]' \
+            | tr -d '[:space:]:-' \
             | tr '[:lower:]' '[:upper:]')
 
           echo ""
@@ -739,7 +717,7 @@ jobs:
           fi
 
           # --------------------------------------------------------
-          # Convert SHA-1 to colon format
+          # Convert SHA-1 to colon format for display
           # --------------------------------------------------------
           APK_SHA1_COLON=$(echo "$APK_SHA1_NORMALIZED" \
             | sed 's/../&:/g' \
@@ -758,7 +736,6 @@ jobs:
           echo "$APK_SHA1_COLON"
           echo ""
           echo "============================================================"
-
 
       # ============================================================
       # 14. Display final APK information
@@ -791,7 +768,6 @@ jobs:
           echo ""
           echo "APK is ready for release."
 
-
       # ============================================================
       # 15. Upload APK Artifact
       # ============================================================
@@ -802,7 +778,6 @@ jobs:
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 1
-
 
       # ============================================================
       # 16. Publish GitHub Release
